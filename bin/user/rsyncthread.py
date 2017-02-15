@@ -27,52 +27,54 @@
 An rsync capable thread monitors a queue and rsync transfers file that appear
 in the queue.
 
-Based on a previous service rsyncloop that rsync transferred a given file on 
+Based on a previous service rsyncloop that rsync transferred a given file on
 every loop packet.
 
 ##############################################################################
 [RsyncThread]
-    
-    # RsyncThread is a service that controls a thread that can upload discrete 
-    # files to a remote system via rsync. The service is based on the 
-    # underlying code of the weeWX rsync skin (rsyncupload.py). Unlike the 
-    # rsync skin which only executes every report cycle, RsyncThread runs in a 
-    # thread and utilises a Queue object to allow it to accept and process 
+
+    # RsyncThread is a service that controls a thread that can upload discrete
+    # files to a remote system via rsync. The service is based on the
+    # underlying code of the weeWX rsync skin (rsyncupload.py). Unlike the
+    # rsync skin which only executes every report cycle, RsyncThread runs in a
+    # thread and utilises a Queue object to allow it to accept and process
     # rsync transfers at any time.
-    
+
     # run this service? True to enable, False to disable. Default is False
     enable = True
-    
+
     # Remote path
-    remote_path = /home/gary
-    
+    remote_path = replace_me
+
     # Server address
-    server = 192.168.2.115
-    
+    server = replace_me
+
     # User name
-    user = root
-    
+    user = replace_me
+
     # Port number. Default is rsync default of 873
-    port = 
-    
+    port =
+
     # Delete file on remote server if file is deleted on local server?
     # Default is False
-    delete = 
+    delete =
 
     # ssh timeout in seconds. Period after which an unsuccessful ssh connection
     # will be terminated. Default is to use system default TCP timeout setting.
     # Refer ssh documentation.
     ssh_timeout = 2
-    
-    # rsync timeout in seconds. Period after which an unsuccessful rsync 
+
+    # rsync timeout in seconds. Period after which an unsuccessful rsync
     # session will be terminated. Default is no timeout.
     rsync_timeout = 2
 
-##############################################################################    
+##############################################################################
 """
 
 # python imports
 import Queue
+import os.path
+import subprocess
 import syslog
 import threading
 import time
@@ -139,10 +141,10 @@ class Rsync(StdService):
                 # Wait up to 20 seconds for the thread to exit:
                 self.rsync_thread.join(20.0)
                 if self.rsync_thread.isAlive():
-                    logerr("rtgd",
+                    logerr("rsyncthread",
                            "Unable to shut down %s thread" % self.rsync_thread.name)
                 else:
-                    logdbg("rtgd",
+                    logdbg("rsyncthread",
                            "Shut down %s thread." % self.rsync_thread.name)
 
 
@@ -155,28 +157,26 @@ class RsyncThread(threading.Thread):
     """Thread that rsync transfers files."""
 
     def __init__(self, queue, config_dict):
-
         # Initialize my superclass:
         threading.Thread.__init__(self)
 
         self.setDaemon(True)
         self.queue = queue
-        self.config_dict = config_dict
 
         # get our RsyncThread config dictionary
-        self.rsync_thread_config_dict = config_dict.get('RsyncThread', {})
-        
+        rsync_config_dict = config_dict.get('RsyncThread', {})
+
         # are we enabled?
-        self.enable = self.rsync_config_dict.get('enable', False)
-        
+        self.enable = rsync_config_dict.get('enable', False)
+
         # Get the rest our our rsync parameters
-        self.remote_path  = os.path.normpath(self.rsync_thread_config_dict.get('remote_path'))
-        self.server       = self.rsync_thread_config_dict.get('server')
-        self.user         = self.rsync_thread_config_dict.get('user')
-        self.delete       = self.rsync_thread_config_dict.get('delete', False)
-        self.port         = self.rsync_thread_config_dict.get('port')
-        self.sshtimeout   = self.rsync_thread_config_dict.get('ssh_timeout')
-        self.rsynctimeout = self.rsync_thread_config_dict.get('rsync_timeout')
+        self.remote_path  = os.path.normpath(rsync_config_dict.get('remote_path'))
+        self.server       = rsync_config_dict.get('server')
+        self.user         = rsync_config_dict.get('user')
+        self.delete       = rsync_config_dict.get('delete', False)
+        self.port         = rsync_config_dict.get('port')
+        self.sshtimeout   = rsync_config_dict.get('ssh_timeout')
+        self.rsynctimeout = rsync_config_dict.get('rsync_timeout')
 
 
     def run(self):
@@ -190,24 +190,25 @@ class RsyncThread(threading.Thread):
                 # a None record is our signal to exit
                 if _file_spec is None:
                     return
+                elif not os.path.isfile(_file_spec):
+                    logdbg2("rsyncthread", "file spec '%s' skipped" % (_file_spec, ))
+                    continue
                 # if packets have backed up in the queue, trim it until it's no
                 # bigger than the max allowed backlog
                 if self.queue.qsize() <= 5:
                     break
 
-            # we now have a file to rsync, if we are enabled wrap in a 
+            # we now have a file to rsync, if we are enabled wrap in a
             # try..except so we can catch any errors
             if self.enable:
                 try:
-### revert to this line before release logdbg2("rsyncthread", "rsyncing file: %s" % (_file_spec, ))
-                    loginf("rsyncthread", "rsyncing file: %s" % (_file_spec, ))
+                    logdbg2("rsyncthread", "rsyncing file: %s" % (_file_spec, ))
                     self.rsync(_file_spec)
-### revert to this line before release logdbg2("rsyncthread", "rsyncing file: %s" % (_file_spec, ))
-                    loginf("rsyncthread", "rsynced file: %s" % (_file_spec, ))
+                    logdbg2("rsyncthread", "rsyncing file: %s" % (_file_spec, ))
                 except (IOError), e:
                     (cl, unused_ob, unused_tr) = sys.exc_info()
-                    logcrit("rsyncthread", 
-                           "Caught exception %s in RsyncThread; %s." % (cl, e))
+                    logcrit("rsyncthread",
+                            "Caught exception %s in RsyncThread; %s." % (cl, e))
                     logcrit("rsyncthread", "Thread exiting.")
                     return
 
@@ -218,8 +219,8 @@ class RsyncThread(threading.Thread):
         # create the rsync command string elements
         # the remote login spec
         if self.user is not None and len(self.user.strip()) > 0:
-            rsyncremotespec = "%s@%s:%s" % (self.user, 
-                                            self.server, 
+            rsyncremotespec = "%s@%s:%s" % (self.user,
+                                            self.server,
                                             self.remote_path)
         else:
             rsyncremotespec = "%s:%s" % (self.server, self.remote_path)
@@ -261,24 +262,22 @@ class RsyncThread(threading.Thread):
         # add our local file spec and remote spec
         cmd.extend([file_spec])
         cmd.extend([rsyncremotespec])
-### delete line before release        loginf("rsyncthread", "rsync cmd=%s" % (cmd, ))        
         # do the rsync as a subprocess, wrap in a try..except to catch what
         # errors we can
         try:
-### delete line before release        loginf("rsyncthread", "about to")
             rsynccmd = subprocess.Popen(cmd,stdout=subprocess.PIPE,
                                         stderr=subprocess.STDOUT,bufsize=1)
             for line in iter(rsynccmd.stdout.readline, b''):
-                loginf("", "%s" % line)
+                loginf("rsyncthread", "%s" % line)
             rsynccmd.stdout.close()
-### delete line before release        loginf("", "done")
         except OSError, e:
             if e.errno == errno.ENOENT:
-                logerr("rsyncthread", 
-                       "rsync does not appear to be installed on this system. (errno %d, \"%s\")" % (e.errno, e.strerror))
+                logerr("rsyncthread",
+                       "rsync does not appear to be installed on this system. (errno %d, \"%s\")" % (e.errno,
+                                                                                                     e.strerror))
             raise
         t2 = time.time()
         # Implement some sort of reporting/logging. Since we are cutting the
         # process loose the best we can do is report what we tried to send!
-        logdbg("rsyncthread", 
+        logdbg("rsyncthread",
                "rsync executed in %0.3f seconds, attempted to transfer 1 file" % (t2-t1))
